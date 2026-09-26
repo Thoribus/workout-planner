@@ -6,15 +6,21 @@ import { Platform } from 'react-native';
 import { WORKOUT_SLOTS } from '@/data/clemsonProgram';
 import {
   clearGoogleAuthToken,
+  clearGoogleCalendarId,
   clearGoogleCalendarEventIds,
   loadGoogleAuthToken,
+  loadGoogleCalendarId,
   loadGoogleCalendarEventIds,
   saveGoogleAuthToken,
+  saveGoogleCalendarId,
   saveGoogleCalendarEventIds,
 } from '@/features/calendar/googleAuthStorage'; // eslint-disable-line import/no-unresolved -- Metro resolves googleAuthStorage.native/web.ts by platform.
 import type { PlanSchedule } from '@/types/workout';
 
-const GOOGLE_SCOPES = ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/calendar.events'];
+const GOOGLE_SCOPES = ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/calendar'];
+const GOOGLE_WORKOUT_CALENDAR_NAME = 'Workout Planner';
+const GOOGLE_WORKOUT_CALENDAR_BACKGROUND = '#F691B2';
+const GOOGLE_WORKOUT_CALENDAR_FOREGROUND = '#000000';
 const GOOGLE_EVENT_DESCRIPTION = 'Denk ans Training morgen, du faule Sau!';
 
 type GoogleCalendarState = {
@@ -111,6 +117,7 @@ export function GoogleCalendarProvider({ children }: PropsWithChildren) {
     }
     await clearGoogleAuthToken();
     await clearGoogleCalendarEventIds();
+    await clearGoogleCalendarId();
   }
 
   async function syncSchedule(schedule: PlanSchedule) {
@@ -120,6 +127,7 @@ export function GoogleCalendarProvider({ children }: PropsWithChildren) {
       throw new Error('Google sign-in is required before syncing calendar events.');
     }
 
+    const calendarId = await ensureWorkoutCalendar(token);
     const nextEventIds = { ...syncedEventIds };
     let created = 0;
     let skipped = 0;
@@ -132,7 +140,7 @@ export function GoogleCalendarProvider({ children }: PropsWithChildren) {
         continue;
       }
 
-      const eventId = await createCalendarEvent(token, {
+      const eventId = await createCalendarEvent(token, calendarId, {
         date: workout.date,
         summary: `${formatWorkoutTitle(WORKOUT_SLOTS[workout.slot].title)} - Week ${workout.week}`,
       });
@@ -154,26 +162,17 @@ export function GoogleCalendarProvider({ children }: PropsWithChildren) {
       throw new Error('Google sign-in is required before removing calendar events.');
     }
 
-    const nextEventIds = { ...syncedEventIds };
-    let deleted = 0;
-    let skipped = 0;
+    const calendarId = await loadGoogleCalendarId() ?? await findWorkoutCalendar(token);
+    const deleted = schedule.workouts.filter((workout) => syncedEventIds[`${workout.date}-${workout.slot}`]).length;
+    const skipped = Math.max(0, schedule.workouts.length - deleted);
 
-    for (const workout of schedule.workouts) {
-      const syncKey = `${workout.date}-${workout.slot}`;
-      const eventId = nextEventIds[syncKey];
-
-      if (!eventId) {
-        skipped += 1;
-        continue;
-      }
-
-      await deleteCalendarEvent(token, eventId);
-      delete nextEventIds[syncKey];
-      deleted += 1;
+    if (calendarId) {
+      await deleteWorkoutCalendar(token, calendarId);
     }
 
-    setSyncedEventIds(nextEventIds);
-    await saveGoogleCalendarEventIds(nextEventIds);
+    setSyncedEventIds({});
+    await clearGoogleCalendarEventIds();
+    await clearGoogleCalendarId();
 
     return { deleted, skipped };
   }
@@ -201,8 +200,8 @@ type CreateCalendarEventInput = {
   summary: string;
 };
 
-async function createCalendarEvent(accessToken: string, input: CreateCalendarEventInput) {
-  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+async function createCalendarEvent(accessToken: string, calendarId: string, input: CreateCalendarEventInput) {
+  const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -238,8 +237,8 @@ async function createCalendarEvent(accessToken: string, input: CreateCalendarEve
   return event.id;
 }
 
-async function deleteCalendarEvent(accessToken: string, eventId: string) {
-  const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+async function deleteWorkoutCalendar(accessToken: string, calendarId: string) {
+  const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -250,7 +249,88 @@ async function deleteCalendarEvent(accessToken: string, eventId: string) {
     return;
   }
 
-  throw new Error(`Google Calendar unsync failed: ${response.status}`);
+  throw new Error(`Google Calendar deletion failed: ${response.status}`);
+}
+
+async function ensureWorkoutCalendar(accessToken: string) {
+  const storedCalendarId = await loadGoogleCalendarId();
+
+  if (storedCalendarId) {
+    await setWorkoutCalendarColor(accessToken, storedCalendarId);
+    return storedCalendarId;
+  }
+
+  const existingCalendarId = await findWorkoutCalendar(accessToken);
+
+  if (existingCalendarId) {
+    await saveGoogleCalendarId(existingCalendarId);
+    await setWorkoutCalendarColor(accessToken, existingCalendarId);
+    return existingCalendarId;
+  }
+
+  const createdCalendarId = await createWorkoutCalendar(accessToken);
+  await saveGoogleCalendarId(createdCalendarId);
+  await setWorkoutCalendarColor(accessToken, createdCalendarId);
+  return createdCalendarId;
+}
+
+async function findWorkoutCalendar(accessToken: string) {
+  const response = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Calendar lookup failed: ${response.status}`);
+  }
+
+  const calendarList = await response.json() as { items?: { id?: string; summary?: string }[] };
+  return calendarList.items?.find((calendar) => calendar.summary === GOOGLE_WORKOUT_CALENDAR_NAME)?.id ?? null;
+}
+
+async function createWorkoutCalendar(accessToken: string) {
+  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      summary: GOOGLE_WORKOUT_CALENDAR_NAME,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Calendar creation failed: ${response.status}`);
+  }
+
+  const calendar = await response.json() as { id?: string };
+
+  if (!calendar.id) {
+    throw new Error('Google Calendar did not return a calendar ID.');
+  }
+
+  return calendar.id;
+}
+
+async function setWorkoutCalendarColor(accessToken: string, calendarId: string) {
+  const response = await fetch(`https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(calendarId)}?colorRgbFormat=true`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      backgroundColor: GOOGLE_WORKOUT_CALENDAR_BACKGROUND,
+      foregroundColor: GOOGLE_WORKOUT_CALENDAR_FOREGROUND,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Calendar color update failed: ${response.status}`);
+  }
 }
 
 function addDays(dateValue: string, days: number) {

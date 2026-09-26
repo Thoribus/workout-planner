@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 
 import { colors } from '@/constants/theme';
 import { GoogleCalendarProvider } from '@/features/calendar/GoogleCalendarContext';
+import { FirstRunOnboarding } from '@/features/onboarding/FirstRunOnboarding';
 import { ActivePlanProvider } from '@/features/plan/ActivePlanContext';
 
 void SplashScreen.preventAutoHideAsync();
@@ -43,6 +44,7 @@ export default function RootLayout() {
           <Stack.Screen name="settings/rounding" options={{ title: 'Rounding' }} />
           <Stack.Screen name="settings/derived-lifts" options={{ title: 'Derived Lifts' }} />
         </Stack>
+        <FirstRunOnboarding />
         </ThemeProvider>
       </GoogleCalendarProvider>
     </ActivePlanProvider>

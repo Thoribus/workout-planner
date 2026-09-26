@@ -1,5 +1,6 @@
 const KEY = 'google-calendar-auth-v1';
 const SYNC_KEY = 'google-calendar-sync-v1';
+const CALENDAR_ID_KEY = 'google-calendar-id-v1';
 
 export async function loadGoogleAuthToken() {
   return globalThis.localStorage?.getItem(KEY) ?? null;
@@ -24,4 +25,16 @@ export async function saveGoogleCalendarEventIds(eventIds: Record<string, string
 
 export async function clearGoogleCalendarEventIds() {
   globalThis.localStorage?.removeItem(SYNC_KEY);
+}
+
+export async function loadGoogleCalendarId() {
+  return globalThis.localStorage?.getItem(CALENDAR_ID_KEY) ?? null;
+}
+
+export async function saveGoogleCalendarId(calendarId: string) {
+  globalThis.localStorage?.setItem(CALENDAR_ID_KEY, calendarId);
+}
+
+export async function clearGoogleCalendarId() {
+  globalThis.localStorage?.removeItem(CALENDAR_ID_KEY);
 }
